@@ -94,10 +94,17 @@ async def root():
 
 @app.get("/health")
 async def health_check():
+    auth_status = spotify_manager.get_authentication_status() if spotify_manager else {
+        "configured": False, 
+        "authenticated": False, 
+        "client_id_set": False, 
+        "client_secret_set": False,
+        "has_cached_token": False
+    }
+    
     return {
         "status": "healthy",
-        "spotify_configured": spotify_manager.configured if spotify_manager else False,
-        "spotify_authenticated": spotify_manager.is_authenticated() if spotify_manager else False,
+        "spotify": auth_status,
         "youtube_available": youtube_downloader is not None,
         "database_connected": True  # We'll implement proper health checks later
     }
@@ -110,7 +117,21 @@ async def spotify_login():
         raise HTTPException(status_code=503, detail="Spotify manager not available")
     
     if not spotify_manager.configured:
-        raise HTTPException(status_code=503, detail="Spotify not configured - please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env file")
+        raise HTTPException(
+            status_code=400, 
+            detail={
+                "error": "Spotify not configured",
+                "message": "Please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in your .env file",
+                "instructions": [
+                    "1. Go to https://developer.spotify.com/dashboard",
+                    "2. Create a new app or use an existing one",
+                    "3. Copy your Client ID and Client Secret",
+                    "4. Add them to your .env file",
+                    "5. Add 'http://localhost:8000/auth/spotify/callback' to your app's redirect URIs",
+                    "6. Restart the application"
+                ]
+            }
+        )
     
     try:
         auth_url = spotify_manager.get_auth_url()
@@ -126,14 +147,14 @@ async def spotify_callback(code: str = Query(...)):
         raise HTTPException(status_code=503, detail="Spotify manager not available")
     
     if not spotify_manager.configured:
-        raise HTTPException(status_code=503, detail="Spotify not configured - please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env file")
+        raise HTTPException(status_code=400, detail="Spotify not configured. Please check your environment variables.")
     
     try:
         success = spotify_manager.authenticate(code)
         if success:
             return {"message": "Authentication successful", "authenticated": True}
         else:
-            raise HTTPException(status_code=400, detail="Authentication failed")
+            raise HTTPException(status_code=400, detail="Authentication failed. Please try again.")
     except Exception as e:
         logger.error(f"Spotify callback error: {e}")
         raise HTTPException(status_code=500, detail=f"Authentication error: {str(e)}")
@@ -142,12 +163,25 @@ async def spotify_callback(code: str = Query(...)):
 async def spotify_auth_status():
     """Check Spotify authentication status"""
     if not spotify_manager:
+        return {
+            "configured": False,
+            "authenticated": False,
+            "client_id_set": False,
+            "client_secret_set": False,
+            "has_cached_token": False,
+            "error": "Spotify manager not available"
+        }
+    
+    return spotify_manager.get_authentication_status()
+
+@app.post("/auth/spotify/logout")
+async def spotify_logout():
+    """Logout from Spotify and clear tokens"""
+    if not spotify_manager:
         raise HTTPException(status_code=503, detail="Spotify manager not available")
     
-    return {
-        "configured": spotify_manager.configured,
-        "authenticated": spotify_manager.is_authenticated() if spotify_manager.configured else False
-    }
+    success = spotify_manager.logout()
+    return {"success": success, "message": "Logged out successfully" if success else "Logout failed"}
 
 # Playlist Management Routes
 @app.get("/playlists")
@@ -339,54 +373,42 @@ async def search_spotify(q: str = Query(...), artist: Optional[str] = None):
         raise HTTPException(status_code=503, detail="Spotify manager not available")
     
     if not spotify_manager.configured:
-        raise HTTPException(status_code=503, detail="Spotify not configured - please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env file")
+        raise HTTPException(
+            status_code=400, 
+            detail={
+                "error": "Spotify not configured",
+                "message": "Please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in your .env file",
+                "setup_required": True
+            }
+        )
     
     if not spotify_manager.is_authenticated():
-        raise HTTPException(status_code=401, detail="Not authenticated with Spotify. Please authenticate first.")
+        raise HTTPException(
+            status_code=401, 
+            detail={
+                "error": "Not authenticated",
+                "message": "Please authenticate with Spotify first",
+                "auth_required": True
+            }
+        )
     
     try:
         results = spotify_manager.search_track(q, artist)
         return {"results": results}
     except Exception as e:
         logger.error(f"Spotify search error: {e}")
+        if "authentication" in str(e).lower() or "token" in str(e).lower():
+            raise HTTPException(
+                status_code=401, 
+                detail={
+                    "error": "Authentication expired",
+                    "message": str(e),
+                    "auth_required": True
+                }
+            )
         raise HTTPException(status_code=500, detail=f"Spotify search failed: {str(e)}")
 
-@app.get("/spotify/search/demo")
-async def search_spotify_demo(q: str = Query(...), artist: Optional[str] = None):
-    """Search Spotify demo mode - returns sample data without authentication"""
-    try:
-        # Use SpotifyManager's demo method if available, otherwise fallback to simple demo data
-        if spotify_manager:
-            demo_tracks = spotify_manager.search_track_demo(q, artist)
-        else:
-            # Fallback demo data if SpotifyManager not available
-            demo_tracks = [
-                {
-                    'id': 'demo_1',
-                    'name': f'Demo Song ({q})',
-                    'artists': [artist] if artist else ['Demo Artist'],
-                    'album': 'Demo Album',
-                    'duration_ms': 210000,
-                    'preview_url': None,
-                    'external_urls': {'spotify': 'https://open.spotify.com/track/demo_1'}
-                },
-                {
-                    'id': 'demo_2', 
-                    'name': f'Another Demo ({q})',
-                    'artists': [artist, 'Featured Artist'] if artist else ['Sample Artist', 'Featured Artist'],
-                    'album': 'Sample Album', 
-                    'duration_ms': 195000,
-                    'preview_url': None,
-                    'external_urls': {'spotify': 'https://open.spotify.com/track/demo_2'}
-                }
-            ]
-        
-        logger.info(f"Spotify demo search for '{q}' returned {len(demo_tracks)} results")
-        return {"results": demo_tracks}
-        
-    except Exception as e:
-        logger.error(f"Spotify demo search error: {e}")
-        raise HTTPException(status_code=500, detail=f"Demo search failed: {str(e)}")
+
 
 @app.get("/spotify/playlists")
 async def get_spotify_playlists():
@@ -395,16 +417,39 @@ async def get_spotify_playlists():
         raise HTTPException(status_code=503, detail="Spotify manager not available")
     
     if not spotify_manager.configured:
-        raise HTTPException(status_code=503, detail="Spotify not configured - please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env file")
+        raise HTTPException(
+            status_code=400, 
+            detail={
+                "error": "Spotify not configured",
+                "message": "Please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in your .env file",
+                "setup_required": True
+            }
+        )
     
     if not spotify_manager.is_authenticated():
-        raise HTTPException(status_code=401, detail="Not authenticated with Spotify. Please authenticate first.")
+        raise HTTPException(
+            status_code=401, 
+            detail={
+                "error": "Not authenticated",
+                "message": "Please authenticate with Spotify first",
+                "auth_required": True
+            }
+        )
     
     try:
         playlists = spotify_manager.get_user_playlists()
         return {"playlists": playlists}
     except Exception as e:
         logger.error(f"Spotify playlists error: {e}")
+        if "authentication" in str(e).lower() or "token" in str(e).lower():
+            raise HTTPException(
+                status_code=401, 
+                detail={
+                    "error": "Authentication expired",
+                    "message": str(e),
+                    "auth_required": True
+                }
+            )
         raise HTTPException(status_code=500, detail=f"Failed to get playlists: {str(e)}")
 
 @app.get("/spotify/playlists/{playlist_id}/tracks")
@@ -414,16 +459,39 @@ async def get_spotify_playlist_tracks(playlist_id: str):
         raise HTTPException(status_code=503, detail="Spotify manager not available")
     
     if not spotify_manager.configured:
-        raise HTTPException(status_code=503, detail="Spotify not configured - please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env file")
+        raise HTTPException(
+            status_code=400, 
+            detail={
+                "error": "Spotify not configured",
+                "message": "Please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in your .env file",
+                "setup_required": True
+            }
+        )
     
     if not spotify_manager.is_authenticated():
-        raise HTTPException(status_code=401, detail="Not authenticated with Spotify. Please authenticate first.")
+        raise HTTPException(
+            status_code=401, 
+            detail={
+                "error": "Not authenticated",
+                "message": "Please authenticate with Spotify first",
+                "auth_required": True
+            }
+        )
     
     try:
         tracks = spotify_manager.get_playlist_tracks(playlist_id)
         return {"tracks": tracks, "playlist_id": playlist_id}
     except Exception as e:
         logger.error(f"Spotify playlist tracks error: {e}")
+        if "authentication" in str(e).lower() or "token" in str(e).lower():
+            raise HTTPException(
+                status_code=401, 
+                detail={
+                    "error": "Authentication expired",
+                    "message": str(e),
+                    "auth_required": True
+                }
+            )
         raise HTTPException(status_code=500, detail=f"Failed to get playlist tracks: {str(e)}")
 
 # File Management Routes

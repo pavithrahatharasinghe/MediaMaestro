@@ -34,8 +34,17 @@ class APIClient {
       let message = 'An error occurred';
       let details = '';
       
+      // Handle structured error responses
       if (data?.detail) {
-        if (typeof data.detail === 'string') {
+        if (typeof data.detail === 'object' && data.detail.message) {
+          message = data.detail.message;
+          details = data.detail.error || '';
+          
+          // Add setup instructions if provided
+          if (data.detail.instructions && Array.isArray(data.detail.instructions)) {
+            details += '\n\nSetup Instructions:\n' + data.detail.instructions.join('\n');
+          }
+        } else if (typeof data.detail === 'string') {
           message = data.detail;
         } else {
           message = JSON.stringify(data.detail);
@@ -46,8 +55,19 @@ class APIClient {
       
       // Specific error handling for common scenarios
       switch (status) {
+        case 400:
+          if (data?.detail?.setup_required) {
+            message = 'Spotify setup required. Please configure your API credentials.';
+            details = 'Go to https://developer.spotify.com/dashboard to get your credentials';
+          }
+          break;
         case 401:
-          message = 'Authentication required. Please connect to Spotify first.';
+          if (data?.detail?.auth_required) {
+            message = 'Spotify authentication required. Please connect to Spotify.';
+            details = 'Click "Connect Spotify" to authenticate';
+          } else {
+            message = 'Authentication required. Please connect to Spotify first.';
+          }
           break;
         case 503:
           if (message.includes('Spotify not configured')) {
@@ -101,6 +121,16 @@ class APIClient {
     return response.data;
   }
 
+  async getSpotifyAuthStatus() {
+    const response = await axios.get(`${this.baseURL}/auth/spotify/status`);
+    return response.data;
+  }
+
+  async spotifyLogout() {
+    const response = await axios.post(`${this.baseURL}/auth/spotify/logout`);
+    return response.data;
+  }
+
   // Playlist Management
   async getPlaylists() {
     const response = await axios.get(`${this.baseURL}/playlists`);
@@ -141,14 +171,6 @@ class APIClient {
   // Spotify Search
   async searchSpotify(query: string, artist?: string) {
     const response = await axios.get(`${this.baseURL}/spotify/search`, {
-      params: { q: query, artist }
-    });
-    return response.data;
-  }
-
-  // Spotify Search Demo (works without authentication)
-  async searchSpotifyDemo(query: string, artist?: string) {
-    const response = await axios.get(`${this.baseURL}/spotify/search/demo`, {
       params: { q: query, artist }
     });
     return response.data;

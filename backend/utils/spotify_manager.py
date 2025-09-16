@@ -24,7 +24,7 @@ class SpotifyManager:
         self.sp = None
         self.configured = False
         
-        if self.client_id and self.client_secret and self.client_id != "demo_client_id":
+        if self.client_id and self.client_secret and self.client_id not in ["demo_client_id", "your_spotify_client_id_here"]:
             try:
                 self.sp_oauth = SpotifyOAuth(
                     client_id=self.client_id,
@@ -38,12 +38,12 @@ class SpotifyManager:
                 # Try to load existing token
                 self._load_token()
                 
-                logger.info("Spotify manager initialized successfully")
+                logger.info("Spotify manager initialized with valid credentials")
             except Exception as e:
                 logger.error(f"Failed to initialize Spotify OAuth: {e}")
                 self.configured = False
         else:
-            logger.warning("Spotify credentials not found or using demo credentials")
+            logger.warning("Spotify credentials not found or placeholder values detected. Please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET")
     
     def _load_token(self):
         """Load existing token if available and valid"""
@@ -64,10 +64,35 @@ class SpotifyManager:
             return False
         
         try:
-            if self.sp:
-                # Test the connection
-                self.sp.current_user()
-                return True
+            # Check if we have a valid token
+            if self.sp_oauth:
+                token_info = self.sp_oauth.get_cached_token()
+                if not token_info:
+                    return False
+                
+                # Check if token is expired
+                if self.sp_oauth.is_token_expired(token_info):
+                    # Try to refresh the token
+                    try:
+                        token_info = self.sp_oauth.refresh_access_token(token_info['refresh_token'])
+                        if token_info:
+                            self.sp = spotipy.Spotify(auth=token_info['access_token'])
+                        else:
+                            return False
+                    except Exception as e:
+                        logger.debug(f"Token refresh failed: {e}")
+                        return False
+                
+                # Test the actual connection with the token
+                if self.sp:
+                    try:
+                        user = self.sp.current_user()
+                        if user and user.get('id'):
+                            return True
+                    except Exception as e:
+                        logger.debug(f"Authentication test failed: {e}")
+                        self.sp = None
+                        
         except Exception as e:
             logger.debug(f"Authentication check failed: {e}")
             self.sp = None
@@ -77,7 +102,7 @@ class SpotifyManager:
     def get_auth_url(self) -> str:
         """Get Spotify authorization URL"""
         if not self.configured:
-            raise Exception("Spotify not configured - please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET")
+            raise Exception("Spotify not configured. Please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in your environment variables.")
         return self.sp_oauth.get_authorize_url()
     
     def authenticate(self, code: str) -> bool:
@@ -90,8 +115,14 @@ class SpotifyManager:
             token_info = self.sp_oauth.get_access_token(code)
             if token_info:
                 self.sp = spotipy.Spotify(auth=token_info['access_token'])
-                logger.info("Spotify authentication successful")
-                return True
+                # Test the authentication by getting user info
+                user = self.sp.current_user()
+                if user and user.get('id'):
+                    logger.info(f"Spotify authentication successful for user: {user.get('display_name', user.get('id'))}")
+                    return True
+                else:
+                    logger.error("Authentication failed - could not get user information")
+                    return False
         except Exception as e:
             logger.error(f"Spotify authentication failed: {e}")
         return False
@@ -99,10 +130,10 @@ class SpotifyManager:
     def search_track(self, query: str, artist: str = None) -> List[Dict]:
         """Search for tracks on Spotify"""
         if not self.configured:
-            raise Exception("Spotify not configured - please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET")
+            raise Exception("Spotify not configured. Please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in your environment variables.")
             
         if not self.is_authenticated():
-            raise Exception("Not authenticated with Spotify - please authenticate first")
+            raise Exception("Not authenticated with Spotify. Please complete the authentication flow first.")
         
         search_query = query
         if artist:
@@ -126,15 +157,31 @@ class SpotifyManager:
             return tracks
         except Exception as e:
             logger.error(f"Spotify search failed: {e}")
-            return []
+            if "token" in str(e).lower() or "auth" in str(e).lower():
+                # Clear invalid token and require re-authentication
+                self.sp = None
+                if self.token_file.exists():
+                    self.token_file.unlink()
+                raise Exception("Spotify authentication expired. Please authenticate again.")
+            raise Exception(f"Spotify search failed: {str(e)}")
+    
+    def get_authentication_status(self) -> Dict[str, any]:
+        """Get detailed authentication status"""
+        return {
+            "configured": self.configured,
+            "authenticated": self.is_authenticated() if self.configured else False,
+            "client_id_set": bool(self.client_id and self.client_id not in ["your_spotify_client_id_here", ""]),
+            "client_secret_set": bool(self.client_secret and self.client_secret not in ["your_spotify_client_secret_here", ""]),
+            "has_cached_token": self.token_file.exists() if self.configured else False
+        }
     
     def get_user_playlists(self) -> List[Dict]:
         """Get user's Spotify playlists"""
         if not self.configured:
-            raise Exception("Spotify not configured - please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET")
+            raise Exception("Spotify not configured. Please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in your environment variables.")
             
         if not self.is_authenticated():
-            raise Exception("Not authenticated with Spotify - please authenticate first")
+            raise Exception("Not authenticated with Spotify. Please complete the authentication flow first.")
         
         try:
             playlists = self.sp.current_user_playlists()
@@ -148,15 +195,20 @@ class SpotifyManager:
             } for playlist in playlists['items']]
         except Exception as e:
             logger.error(f"Failed to get playlists: {e}")
-            return []
+            if "token" in str(e).lower() or "auth" in str(e).lower():
+                self.sp = None
+                if self.token_file.exists():
+                    self.token_file.unlink()
+                raise Exception("Spotify authentication expired. Please authenticate again.")
+            raise Exception(f"Failed to get playlists: {str(e)}")
     
     def create_playlist(self, name: str, description: str = "", public: bool = False) -> Optional[str]:
         """Create a new Spotify playlist"""
         if not self.configured:
-            raise Exception("Spotify not configured - please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET")
+            raise Exception("Spotify not configured. Please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in your environment variables.")
             
         if not self.is_authenticated():
-            raise Exception("Not authenticated with Spotify - please authenticate first")
+            raise Exception("Not authenticated with Spotify. Please complete the authentication flow first.")
         
         try:
             user = self.sp.current_user()
@@ -169,12 +221,17 @@ class SpotifyManager:
             return playlist['id']
         except Exception as e:
             logger.error(f"Failed to create playlist: {e}")
-            return None
+            if "token" in str(e).lower() or "auth" in str(e).lower():
+                self.sp = None
+                if self.token_file.exists():
+                    self.token_file.unlink()
+                raise Exception("Spotify authentication expired. Please authenticate again.")
+            raise Exception(f"Failed to create playlist: {str(e)}")
     
     def add_tracks_to_playlist(self, playlist_id: str, track_ids: List[str]) -> bool:
         """Add tracks to a Spotify playlist"""
         if not self.is_authenticated():
-            raise Exception("Not authenticated with Spotify - please authenticate first")
+            raise Exception("Not authenticated with Spotify. Please complete the authentication flow first.")
         
         try:
             # Spotify API limits to 100 tracks per request
@@ -184,12 +241,17 @@ class SpotifyManager:
             return True
         except Exception as e:
             logger.error(f"Failed to add tracks to playlist: {e}")
-            return False
+            if "token" in str(e).lower() or "auth" in str(e).lower():
+                self.sp = None
+                if self.token_file.exists():
+                    self.token_file.unlink()
+                raise Exception("Spotify authentication expired. Please authenticate again.")
+            raise Exception(f"Failed to add tracks to playlist: {str(e)}")
     
     def get_playlist_tracks(self, playlist_id: str) -> List[Dict]:
         """Get tracks from a Spotify playlist"""
         if not self.is_authenticated():
-            raise Exception("Not authenticated with Spotify - please authenticate first")
+            raise Exception("Not authenticated with Spotify. Please complete the authentication flow first.")
         
         try:
             results = self.sp.playlist_tracks(playlist_id)
@@ -211,41 +273,21 @@ class SpotifyManager:
             return tracks
         except Exception as e:
             logger.error(f"Failed to get playlist tracks: {e}")
-            return []
+            if "token" in str(e).lower() or "auth" in str(e).lower():
+                self.sp = None
+                if self.token_file.exists():
+                    self.token_file.unlink()
+                raise Exception("Spotify authentication expired. Please authenticate again.")
+            raise Exception(f"Failed to get playlist tracks: {str(e)}")
     
-    def search_track_demo(self, query: str, artist: str = None) -> List[Dict]:
-        """Demo search that returns sample data without authentication"""
-        logger.info(f"Performing demo Spotify search for: {query}")
-        
-        # Generate more realistic demo data based on query
-        demo_genres = ['pop', 'rock', 'hip-hop', 'electronic', 'indie', 'jazz', 'classical']
-        import random
-        
-        tracks = []
-        search_terms = query.lower().split()
-        
-        # Create sample tracks with variation
-        sample_templates = [
-            {"name": f"{query} (Radio Edit)", "artist": "Popular Artist", "album": "Hit Singles"},
-            {"name": f"{query} - Acoustic Version", "artist": "Indie Artist", "album": "Acoustic Sessions"},
-            {"name": f"{query} (Remix)", "artist": "DJ Producer", "album": "Remix Collection"},
-            {"name": f"The {query} Song", "artist": "Alternative Band", "album": "Latest Album"},
-            {"name": f"{query} Blues", "artist": "Blues Legend", "album": "Classic Blues"},
-        ]
-        
-        for i, template in enumerate(sample_templates[:3]):  # Limit to 3 results
-            duration = random.randint(180000, 300000)  # 3-5 minutes
-            track = {
-                'id': f'demo_{i+1}_{hash(query) % 1000}',
-                'name': template["name"],
-                'artists': [template["artist"]] + ([artist] if artist else []),
-                'album': template["album"],
-                'duration_ms': duration,
-                'preview_url': None,  # No preview in demo mode
-                'external_urls': {
-                    'spotify': f'https://open.spotify.com/track/demo_{i+1}_{hash(query) % 1000}'
-                }
-            }
-            tracks.append(track)
-        
-        return tracks
+    def logout(self) -> bool:
+        """Logout and clear authentication"""
+        try:
+            self.sp = None
+            if self.token_file.exists():
+                self.token_file.unlink()
+                logger.info("Spotify token cleared successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to logout: {e}")
+            return False

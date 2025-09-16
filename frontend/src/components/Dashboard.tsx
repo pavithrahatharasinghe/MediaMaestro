@@ -15,14 +15,20 @@ const Dashboard: React.FC<DashboardProps> = () => {
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [selectedPlaylist, setSelectedPlaylist] = useState<Playlist | null>(null);
   const [songs, setSongs] = useState<Song[]>([]);
-  const [isSpotifyConnected, setIsSpotifyConnected] = useState(false);
+  const [spotifyStatus, setSpotifyStatus] = useState({
+    configured: false,
+    authenticated: false,
+    client_id_set: false,
+    client_secret_set: false,
+    has_cached_token: false
+  });
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [showSearchDialog, setShowSearchDialog] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     loadPlaylists();
-    checkSpotifyConnection();
+    checkSpotifyStatus();
   }, []);
 
   const loadPlaylists = async () => {
@@ -36,18 +42,25 @@ const Dashboard: React.FC<DashboardProps> = () => {
     }
   };
 
-  const checkSpotifyConnection = async () => {
+  const checkSpotifyStatus = async () => {
     try {
-      const health = await apiClient.healthCheck();
-      setIsSpotifyConnected(health.spotify_configured);
+      const status = await apiClient.getSpotifyAuthStatus();
+      setSpotifyStatus(status);
     } catch (error) {
-      console.error('Failed to check Spotify connection:', error);
+      console.error('Failed to check Spotify status:', error);
+      setSpotifyStatus({
+        configured: false,
+        authenticated: false,
+        client_id_set: false,
+        client_secret_set: false,
+        has_cached_token: false
+      });
     }
   };
 
   const handleCreatePlaylist = async (name: string, category: PlaylistCategory) => {
     try {
-      await apiClient.createPlaylist(name, category, isSpotifyConnected);
+      await apiClient.createPlaylist(name, category, spotifyStatus.authenticated);
       loadPlaylists();
       setShowCreateDialog(false);
     } catch (error) {
@@ -71,6 +84,15 @@ const Dashboard: React.FC<DashboardProps> = () => {
       window.open(auth_url, '_blank');
     } catch (error) {
       console.error('Failed to get Spotify auth URL:', error);
+    }
+  };
+
+  const handleSpotifyLogout = async () => {
+    try {
+      await apiClient.spotifyLogout();
+      checkSpotifyStatus(); // Refresh status
+    } catch (error) {
+      console.error('Failed to logout from Spotify:', error);
     }
   };
 
@@ -110,7 +132,12 @@ const Dashboard: React.FC<DashboardProps> = () => {
                 <span>Create Playlist</span>
               </button>
               
-              {!isSpotifyConnected ? (
+              {!spotifyStatus.configured ? (
+                <div className="flex items-center space-x-2 px-4 py-2 bg-orange-600/20 text-orange-400 rounded-lg">
+                  <ExternalLink className="h-4 w-4" />
+                  <span>Setup Required</span>
+                </div>
+              ) : !spotifyStatus.authenticated ? (
                 <button
                   onClick={handleSpotifyLogin}
                   className="flex items-center space-x-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
@@ -119,9 +146,17 @@ const Dashboard: React.FC<DashboardProps> = () => {
                   <span>Connect Spotify</span>
                 </button>
               ) : (
-                <div className="flex items-center space-x-2 px-4 py-2 bg-green-600/20 text-green-400 rounded-lg">
-                  <ExternalLink className="h-4 w-4" />
-                  <span>Connected</span>
+                <div className="flex items-center space-x-2">
+                  <div className="flex items-center space-x-2 px-4 py-2 bg-green-600/20 text-green-400 rounded-lg">
+                    <ExternalLink className="h-4 w-4" />
+                    <span>Connected</span>
+                  </div>
+                  <button
+                    onClick={handleSpotifyLogout}
+                    className="px-3 py-2 bg-red-600 hover:bg-red-700 text-white text-sm rounded-lg transition-colors"
+                  >
+                    Logout
+                  </button>
                 </div>
               )}
             </div>

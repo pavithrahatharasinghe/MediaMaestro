@@ -26,7 +26,6 @@ const SearchDialog: React.FC<SearchDialogProps> = ({
   const [downloading, setDownloading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [errorDetails, setErrorDetails] = useState<string | null>(null);
-  const [spotifyDemoMode, setSpotifyDemoMode] = useState(false);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,24 +41,10 @@ const SearchDialog: React.FC<SearchDialogProps> = ({
         setYoutubeResults(results);
         setSpotifyResults([]);
       } else {
-        // Try normal Spotify search first, fall back to demo on auth errors
-        try {
-          const { results } = await apiClient.searchSpotify(query.trim());
-          setSpotifyResults(results);
-          setYoutubeResults([]);
-          setSpotifyDemoMode(false);
-        } catch (spotifyError) {
-          const apiError = spotifyError as APIError;
-          if (apiError.status === 503 || apiError.status === 401) {
-            // Fall back to demo mode
-            const { results } = await apiClient.searchSpotifyDemo(query.trim());
-            setSpotifyResults(results);
-            setYoutubeResults([]);
-            setSpotifyDemoMode(true);
-          } else {
-            throw spotifyError;
-          }
-        }
+        // Perform Spotify search - no fallback to demo mode
+        const { results } = await apiClient.searchSpotify(query.trim());
+        setSpotifyResults(results);
+        setYoutubeResults([]);
       }
     } catch (error) {
       console.error('Search failed:', error);
@@ -183,7 +168,7 @@ const SearchDialog: React.FC<SearchDialogProps> = ({
                 <div className="flex-1">
                   <p className="text-red-200 font-medium">{error}</p>
                   {errorDetails && (
-                    <p className="text-red-300 text-sm mt-1">{errorDetails}</p>
+                    <p className="text-red-300 text-sm mt-1 whitespace-pre-line">{errorDetails}</p>
                   )}
                   {searchType === 'spotify' && error.includes('Spotify') && (
                     <div className="mt-2 text-sm text-red-300">
@@ -246,13 +231,6 @@ const SearchDialog: React.FC<SearchDialogProps> = ({
 
           {searchType === 'spotify' && spotifyResults.length > 0 && (
             <div className="space-y-4">
-              {spotifyDemoMode && (
-                <div className="mb-4 p-3 bg-blue-900/50 border border-blue-600 rounded-lg">
-                  <p className="text-blue-200 text-sm">
-                    <strong>Demo Mode:</strong> Showing sample results. Connect to Spotify for real search results.
-                  </p>
-                </div>
-              )}
               {spotifyResults.map((track) => (
                 <div key={track.id} className="flex items-center space-x-4 p-4 bg-gray-800 rounded-lg">
                   <div className="w-16 h-12 bg-gray-700 rounded flex items-center justify-center">

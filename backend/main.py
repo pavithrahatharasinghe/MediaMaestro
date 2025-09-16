@@ -8,7 +8,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
+from pydantic import BaseModel
 import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Pydantic models for request bodies
+class CreatePlaylistRequest(BaseModel):
+    name: str
+    category: str
+    create_spotify: bool = False
 
 # Import our modules (we'll handle imports gracefully)
 try:
@@ -35,8 +46,20 @@ app.add_middleware(
 )
 
 # Initialize managers
-spotify_manager = SpotifyManager() if 'SpotifyManager' in globals() else None
-youtube_downloader = YouTubeDownloader() if 'YouTubeDownloader' in globals() else None
+try:
+    spotify_manager = SpotifyManager()
+    logger.info(f"Spotify manager initialized - configured: {spotify_manager.configured}")
+except Exception as e:
+    logger.error(f"Failed to initialize Spotify manager: {e}")
+    spotify_manager = None
+
+try:
+    youtube_downloader = YouTubeDownloader() if 'YouTubeDownloader' in globals() else None
+    if youtube_downloader:
+        logger.info("YouTube downloader initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize YouTube downloader: {e}")
+    youtube_downloader = None
 
 # Initialize database
 try:
@@ -56,7 +79,9 @@ async def root():
 async def health_check():
     return {
         "status": "healthy",
-        "spotify_configured": bool(os.getenv("SPOTIFY_CLIENT_ID")),
+        "spotify_configured": spotify_manager.configured if spotify_manager else False,
+        "spotify_authenticated": spotify_manager.sp is not None if spotify_manager else False,
+        "youtube_available": youtube_downloader is not None,
         "database_connected": True  # We'll implement proper health checks later
     }
 
@@ -67,17 +92,24 @@ async def spotify_login():
     if not spotify_manager:
         raise HTTPException(status_code=503, detail="Spotify manager not available")
     
+    if not spotify_manager.configured:
+        raise HTTPException(status_code=503, detail="Spotify not configured - missing API credentials")
+    
     try:
         auth_url = spotify_manager.get_auth_url()
         return {"auth_url": auth_url}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Spotify auth URL error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get auth URL: {str(e)}")
 
 @app.get("/auth/spotify/callback")
 async def spotify_callback(code: str = Query(...)):
     """Handle Spotify authentication callback"""
     if not spotify_manager:
         raise HTTPException(status_code=503, detail="Spotify manager not available")
+    
+    if not spotify_manager.configured:
+        raise HTTPException(status_code=503, detail="Spotify not configured - missing API credentials")
     
     try:
         success = spotify_manager.authenticate(code)
@@ -86,7 +118,8 @@ async def spotify_callback(code: str = Query(...)):
         else:
             raise HTTPException(status_code=400, detail="Authentication failed")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Spotify callback error: {e}")
+        raise HTTPException(status_code=500, detail=f"Authentication error: {str(e)}")
 
 # Playlist Management Routes
 @app.get("/playlists")
@@ -110,25 +143,23 @@ async def get_playlists(db: Session = Depends(get_db)):
 
 @app.post("/playlists")
 async def create_playlist(
-    name: str,
-    category: str,
-    create_spotify: bool = False,
+    request: CreatePlaylistRequest,
     db: Session = Depends(get_db)
 ):
     """Create a new playlist"""
     try:
         # Check if playlist already exists
-        existing = db.query(Playlist).filter(Playlist.name == name).first()
+        existing = db.query(Playlist).filter(Playlist.name == request.name).first()
         if existing:
             raise HTTPException(status_code=400, detail="Playlist already exists")
         
         spotify_id = None
-        if create_spotify and spotify_manager:
-            spotify_id = spotify_manager.create_playlist(name, f"MediaMaestro - {category}")
+        if request.create_spotify and spotify_manager and spotify_manager.configured and spotify_manager.sp:
+            spotify_id = spotify_manager.create_playlist(request.name, f"MediaMaestro - {request.category}")
         
         playlist = Playlist(
-            name=name,
-            category=category,
+            name=request.name,
+            category=request.category,
             spotify_id=spotify_id
         )
         
@@ -143,6 +174,7 @@ async def create_playlist(
             "spotify_id": playlist.spotify_id
         }
     except Exception as e:
+        logger.error(f"Failed to create playlist: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Song Management Routes
@@ -278,11 +310,31 @@ async def search_spotify(q: str = Query(...), artist: Optional[str] = None):
     if not spotify_manager:
         raise HTTPException(status_code=503, detail="Spotify manager not available")
     
+    if not spotify_manager.configured:
+        raise HTTPException(status_code=503, detail="Spotify not configured - missing API credentials")
+    
+    if not spotify_manager.sp:
+        raise HTTPException(status_code=401, detail="Not authenticated with Spotify. Please authenticate first.")
+    
     try:
         results = spotify_manager.search_track(q, artist)
         return {"results": results}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Spotify search error: {e}")
+        raise HTTPException(status_code=500, detail=f"Spotify search failed: {str(e)}")
+
+@app.get("/spotify/search/demo")
+async def search_spotify_demo(q: str = Query(...), artist: Optional[str] = None):
+    """Demo Spotify search that works without authentication for testing"""
+    if not spotify_manager:
+        raise HTTPException(status_code=503, detail="Spotify manager not available")
+    
+    try:
+        results = spotify_manager.search_track_demo(q, artist)
+        return {"results": results, "demo_mode": True}
+    except Exception as e:
+        logger.error(f"Demo search error: {e}")
+        raise HTTPException(status_code=500, detail=f"Demo search failed: {str(e)}")
 
 @app.get("/spotify/playlists")
 async def get_spotify_playlists():
@@ -290,11 +342,18 @@ async def get_spotify_playlists():
     if not spotify_manager:
         raise HTTPException(status_code=503, detail="Spotify manager not available")
     
+    if not spotify_manager.configured:
+        raise HTTPException(status_code=503, detail="Spotify not configured - missing API credentials")
+    
+    if not spotify_manager.sp:
+        raise HTTPException(status_code=401, detail="Not authenticated with Spotify. Please authenticate first.")
+    
     try:
         playlists = spotify_manager.get_user_playlists()
         return {"playlists": playlists}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Spotify playlists error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get playlists: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

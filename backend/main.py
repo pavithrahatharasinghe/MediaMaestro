@@ -8,11 +8,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
+from pydantic import BaseModel
 import logging
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Pydantic models for request bodies
+class CreatePlaylistRequest(BaseModel):
+    name: str
+    category: str
+    create_spotify: bool = False
 
 # Import our modules (we'll handle imports gracefully)
 try:
@@ -136,25 +143,23 @@ async def get_playlists(db: Session = Depends(get_db)):
 
 @app.post("/playlists")
 async def create_playlist(
-    name: str,
-    category: str,
-    create_spotify: bool = False,
+    request: CreatePlaylistRequest,
     db: Session = Depends(get_db)
 ):
     """Create a new playlist"""
     try:
         # Check if playlist already exists
-        existing = db.query(Playlist).filter(Playlist.name == name).first()
+        existing = db.query(Playlist).filter(Playlist.name == request.name).first()
         if existing:
             raise HTTPException(status_code=400, detail="Playlist already exists")
         
         spotify_id = None
-        if create_spotify and spotify_manager:
-            spotify_id = spotify_manager.create_playlist(name, f"MediaMaestro - {category}")
+        if request.create_spotify and spotify_manager and spotify_manager.configured and spotify_manager.sp:
+            spotify_id = spotify_manager.create_playlist(request.name, f"MediaMaestro - {request.category}")
         
         playlist = Playlist(
-            name=name,
-            category=category,
+            name=request.name,
+            category=request.category,
             spotify_id=spotify_id
         )
         
@@ -169,6 +174,7 @@ async def create_playlist(
             "spotify_id": playlist.spotify_id
         }
     except Exception as e:
+        logger.error(f"Failed to create playlist: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Song Management Routes

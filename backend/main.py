@@ -351,6 +351,43 @@ async def search_spotify(q: str = Query(...), artist: Optional[str] = None):
         logger.error(f"Spotify search error: {e}")
         raise HTTPException(status_code=500, detail=f"Spotify search failed: {str(e)}")
 
+@app.get("/spotify/search/demo")
+async def search_spotify_demo(q: str = Query(...), artist: Optional[str] = None):
+    """Search Spotify demo mode - returns sample data without authentication"""
+    try:
+        # Use SpotifyManager's demo method if available, otherwise fallback to simple demo data
+        if spotify_manager:
+            demo_tracks = spotify_manager.search_track_demo(q, artist)
+        else:
+            # Fallback demo data if SpotifyManager not available
+            demo_tracks = [
+                {
+                    'id': 'demo_1',
+                    'name': f'Demo Song ({q})',
+                    'artists': [artist] if artist else ['Demo Artist'],
+                    'album': 'Demo Album',
+                    'duration_ms': 210000,
+                    'preview_url': None,
+                    'external_urls': {'spotify': 'https://open.spotify.com/track/demo_1'}
+                },
+                {
+                    'id': 'demo_2', 
+                    'name': f'Another Demo ({q})',
+                    'artists': [artist, 'Featured Artist'] if artist else ['Sample Artist', 'Featured Artist'],
+                    'album': 'Sample Album', 
+                    'duration_ms': 195000,
+                    'preview_url': None,
+                    'external_urls': {'spotify': 'https://open.spotify.com/track/demo_2'}
+                }
+            ]
+        
+        logger.info(f"Spotify demo search for '{q}' returned {len(demo_tracks)} results")
+        return {"results": demo_tracks}
+        
+    except Exception as e:
+        logger.error(f"Spotify demo search error: {e}")
+        raise HTTPException(status_code=500, detail=f"Demo search failed: {str(e)}")
+
 @app.get("/spotify/playlists")
 async def get_spotify_playlists():
     """Get user's Spotify playlists"""

@@ -79,3 +79,13 @@ htmlcov/
 *.tmp
 *.temp
 /tmp/
+
+# Test files (don't commit test media files)
+test_files/
+*test*.mp3
+*test*.flac
+*test*.mp4
+
+# Spotify token cache
+spotify_token.json
+.cache-*

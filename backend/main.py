@@ -21,11 +21,20 @@ class CreatePlaylistRequest(BaseModel):
     category: str
     create_spotify: bool = False
 
+class CopyFilesRequest(BaseModel):
+    source_paths: List[str]
+    target_playlist: str
+
+class MatchPlaylistRequest(BaseModel):
+    playlist_key: str
+    spotify_playlist_id: Optional[str] = None
+
 # Import our modules (we'll handle imports gracefully)
 try:
     from models.database import get_db, init_db, Playlist, Song, DownloadJob
     from utils.spotify_manager import SpotifyManager
     from utils.youtube_downloader import YouTubeDownloader
+    from utils.file_manager import FileManager
 except ImportError as e:
     logging.warning(f"Some modules not available: {e}")
 
@@ -61,6 +70,14 @@ except Exception as e:
     logger.error(f"Failed to initialize YouTube downloader: {e}")
     youtube_downloader = None
 
+try:
+    file_manager = FileManager() if 'FileManager' in globals() else None
+    if file_manager:
+        logger.info("File manager initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize File manager: {e}")
+    file_manager = None
+
 # Initialize database
 try:
     init_db()
@@ -80,7 +97,7 @@ async def health_check():
     return {
         "status": "healthy",
         "spotify_configured": spotify_manager.configured if spotify_manager else False,
-        "spotify_authenticated": spotify_manager.sp is not None if spotify_manager else False,
+        "spotify_authenticated": spotify_manager.is_authenticated() if spotify_manager else False,
         "youtube_available": youtube_downloader is not None,
         "database_connected": True  # We'll implement proper health checks later
     }
@@ -93,7 +110,7 @@ async def spotify_login():
         raise HTTPException(status_code=503, detail="Spotify manager not available")
     
     if not spotify_manager.configured:
-        raise HTTPException(status_code=503, detail="Spotify not configured - missing API credentials")
+        raise HTTPException(status_code=503, detail="Spotify not configured - please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env file")
     
     try:
         auth_url = spotify_manager.get_auth_url()
@@ -109,17 +126,28 @@ async def spotify_callback(code: str = Query(...)):
         raise HTTPException(status_code=503, detail="Spotify manager not available")
     
     if not spotify_manager.configured:
-        raise HTTPException(status_code=503, detail="Spotify not configured - missing API credentials")
+        raise HTTPException(status_code=503, detail="Spotify not configured - please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env file")
     
     try:
         success = spotify_manager.authenticate(code)
         if success:
-            return {"message": "Authentication successful"}
+            return {"message": "Authentication successful", "authenticated": True}
         else:
             raise HTTPException(status_code=400, detail="Authentication failed")
     except Exception as e:
         logger.error(f"Spotify callback error: {e}")
         raise HTTPException(status_code=500, detail=f"Authentication error: {str(e)}")
+
+@app.get("/auth/spotify/status")
+async def spotify_auth_status():
+    """Check Spotify authentication status"""
+    if not spotify_manager:
+        raise HTTPException(status_code=503, detail="Spotify manager not available")
+    
+    return {
+        "configured": spotify_manager.configured,
+        "authenticated": spotify_manager.is_authenticated() if spotify_manager.configured else False
+    }
 
 # Playlist Management Routes
 @app.get("/playlists")
@@ -311,9 +339,9 @@ async def search_spotify(q: str = Query(...), artist: Optional[str] = None):
         raise HTTPException(status_code=503, detail="Spotify manager not available")
     
     if not spotify_manager.configured:
-        raise HTTPException(status_code=503, detail="Spotify not configured - missing API credentials")
+        raise HTTPException(status_code=503, detail="Spotify not configured - please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env file")
     
-    if not spotify_manager.sp:
+    if not spotify_manager.is_authenticated():
         raise HTTPException(status_code=401, detail="Not authenticated with Spotify. Please authenticate first.")
     
     try:
@@ -323,19 +351,6 @@ async def search_spotify(q: str = Query(...), artist: Optional[str] = None):
         logger.error(f"Spotify search error: {e}")
         raise HTTPException(status_code=500, detail=f"Spotify search failed: {str(e)}")
 
-@app.get("/spotify/search/demo")
-async def search_spotify_demo(q: str = Query(...), artist: Optional[str] = None):
-    """Demo Spotify search that works without authentication for testing"""
-    if not spotify_manager:
-        raise HTTPException(status_code=503, detail="Spotify manager not available")
-    
-    try:
-        results = spotify_manager.search_track_demo(q, artist)
-        return {"results": results, "demo_mode": True}
-    except Exception as e:
-        logger.error(f"Demo search error: {e}")
-        raise HTTPException(status_code=500, detail=f"Demo search failed: {str(e)}")
-
 @app.get("/spotify/playlists")
 async def get_spotify_playlists():
     """Get user's Spotify playlists"""
@@ -343,9 +358,9 @@ async def get_spotify_playlists():
         raise HTTPException(status_code=503, detail="Spotify manager not available")
     
     if not spotify_manager.configured:
-        raise HTTPException(status_code=503, detail="Spotify not configured - missing API credentials")
+        raise HTTPException(status_code=503, detail="Spotify not configured - please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env file")
     
-    if not spotify_manager.sp:
+    if not spotify_manager.is_authenticated():
         raise HTTPException(status_code=401, detail="Not authenticated with Spotify. Please authenticate first.")
     
     try:
@@ -354,6 +369,101 @@ async def get_spotify_playlists():
     except Exception as e:
         logger.error(f"Spotify playlists error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get playlists: {str(e)}")
+
+@app.get("/spotify/playlists/{playlist_id}/tracks")
+async def get_spotify_playlist_tracks(playlist_id: str):
+    """Get tracks from a specific Spotify playlist"""
+    if not spotify_manager:
+        raise HTTPException(status_code=503, detail="Spotify manager not available")
+    
+    if not spotify_manager.configured:
+        raise HTTPException(status_code=503, detail="Spotify not configured - please set valid SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env file")
+    
+    if not spotify_manager.is_authenticated():
+        raise HTTPException(status_code=401, detail="Not authenticated with Spotify. Please authenticate first.")
+    
+    try:
+        tracks = spotify_manager.get_playlist_tracks(playlist_id)
+        return {"tracks": tracks, "playlist_id": playlist_id}
+    except Exception as e:
+        logger.error(f"Spotify playlist tracks error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get playlist tracks: {str(e)}")
+
+# File Management Routes
+@app.get("/files/scan")
+async def scan_media_files():
+    """Scan all media files and return organization status"""
+    if not file_manager:
+        raise HTTPException(status_code=503, detail="File manager not available")
+    
+    try:
+        result = file_manager.scan_media_directory()
+        return result
+    except Exception as e:
+        logger.error(f"File scan error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to scan files: {str(e)}")
+
+@app.post("/files/copy")
+async def copy_files_to_media(request: CopyFilesRequest):
+    """Copy files from external locations to media directory"""
+    if not file_manager:
+        raise HTTPException(status_code=503, detail="File manager not available")
+    
+    try:
+        result = file_manager.copy_files_to_media_directory(
+            request.source_paths, 
+            request.target_playlist
+        )
+        return result
+    except Exception as e:
+        logger.error(f"File copy error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to copy files: {str(e)}")
+
+@app.get("/files/missing/{playlist_key}")
+async def find_missing_formats(playlist_key: str):
+    """Find songs missing in certain formats for a playlist"""
+    if not file_manager:
+        raise HTTPException(status_code=503, detail="File manager not available")
+    
+    try:
+        result = file_manager.find_missing_formats(playlist_key)
+        return result
+    except Exception as e:
+        logger.error(f"Missing formats check error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to check missing formats: {str(e)}")
+
+@app.post("/files/match-spotify")
+async def match_with_spotify_playlist(request: MatchPlaylistRequest):
+    """Match local files with Spotify playlist"""
+    if not file_manager:
+        raise HTTPException(status_code=503, detail="File manager not available")
+    
+    if not spotify_manager:
+        raise HTTPException(status_code=503, detail="Spotify manager not available")
+    
+    try:
+        # Get Spotify playlist tracks if playlist ID provided
+        spotify_tracks = []
+        if request.spotify_playlist_id:
+            if not spotify_manager.is_authenticated():
+                raise HTTPException(status_code=401, detail="Not authenticated with Spotify")
+            spotify_tracks = spotify_manager.get_playlist_tracks(request.spotify_playlist_id)
+        
+        result = file_manager.match_with_spotify_tracks(request.playlist_key, spotify_tracks)
+        return result
+    except Exception as e:
+        logger.error(f"Spotify matching error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to match with Spotify: {str(e)}")
+
+@app.get("/config/media-directory")
+async def get_media_directory_config():
+    """Get current media directory configuration"""
+    from config import MEDIA_DIR, EXTERNAL_MEDIA_DIR
+    return {
+        "media_directory": str(MEDIA_DIR),
+        "external_configured": EXTERNAL_MEDIA_DIR is not None,
+        "external_path": EXTERNAL_MEDIA_DIR
+    }
 
 if __name__ == "__main__":
     import uvicorn

@@ -212,3 +212,40 @@ class SpotifyManager:
         except Exception as e:
             logger.error(f"Failed to get playlist tracks: {e}")
             return []
+    
+    def search_track_demo(self, query: str, artist: str = None) -> List[Dict]:
+        """Demo search that returns sample data without authentication"""
+        logger.info(f"Performing demo Spotify search for: {query}")
+        
+        # Generate more realistic demo data based on query
+        demo_genres = ['pop', 'rock', 'hip-hop', 'electronic', 'indie', 'jazz', 'classical']
+        import random
+        
+        tracks = []
+        search_terms = query.lower().split()
+        
+        # Create sample tracks with variation
+        sample_templates = [
+            {"name": f"{query} (Radio Edit)", "artist": "Popular Artist", "album": "Hit Singles"},
+            {"name": f"{query} - Acoustic Version", "artist": "Indie Artist", "album": "Acoustic Sessions"},
+            {"name": f"{query} (Remix)", "artist": "DJ Producer", "album": "Remix Collection"},
+            {"name": f"The {query} Song", "artist": "Alternative Band", "album": "Latest Album"},
+            {"name": f"{query} Blues", "artist": "Blues Legend", "album": "Classic Blues"},
+        ]
+        
+        for i, template in enumerate(sample_templates[:3]):  # Limit to 3 results
+            duration = random.randint(180000, 300000)  # 3-5 minutes
+            track = {
+                'id': f'demo_{i+1}_{hash(query) % 1000}',
+                'name': template["name"],
+                'artists': [template["artist"]] + ([artist] if artist else []),
+                'album': template["album"],
+                'duration_ms': duration,
+                'preview_url': None,  # No preview in demo mode
+                'external_urls': {
+                    'spotify': f'https://open.spotify.com/track/demo_{i+1}_{hash(query) % 1000}'
+                }
+            }
+            tracks.append(track)
+        
+        return tracks

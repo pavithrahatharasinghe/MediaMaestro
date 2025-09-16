@@ -6,12 +6,16 @@ import logging
 from mutagen.mp3 import MP3
 from mutagen.flac import FLAC
 import asyncio
+from config import MEDIA_DIR
 
 logger = logging.getLogger(__name__)
 
 class YouTubeDownloader:
-    def __init__(self, download_dir: str = "./downloads"):
-        self.download_dir = Path(download_dir)
+    def __init__(self, download_dir: str = None):
+        if download_dir:
+            self.download_dir = Path(download_dir)
+        else:
+            self.download_dir = MEDIA_DIR
         self.download_dir.mkdir(exist_ok=True)
         
         # Quality options

@@ -314,9 +314,18 @@ curl -X POST "http://localhost:8000/files/match-spotify" \
 ## 🛠️ Troubleshooting
 
 ### Spotify Authentication Issues
-- **Error**: "Spotify not configured"
-  - **Solution**: Ensure `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` are set in `.env`
-  - **Check**: Your Spotify app redirect URI matches exactly: `http://localhost:8000/auth/spotify/callback`
+- **Status**: "Setup Required" or "Connect Spotify"
+  - **Setup Required**: You need to configure Spotify API credentials
+  - **Connect Spotify**: Credentials are configured, but you need to authenticate
+- **Setup Steps**:
+  1. Go to [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
+  2. Create a new app (or use existing one)
+  3. Copy your Client ID and Client Secret to `.env` file
+  4. Add `http://localhost:8000/auth/spotify/callback` to your app's redirect URIs
+  5. Restart the application
+  6. Click "Connect Spotify" to authenticate
+- **Authentication Required**: All Spotify features require proper authentication - no demo mode
+- **Token Refresh**: The app automatically refreshes expired tokens
 
 ### File Management Issues
 - **Error**: "File manager not available"

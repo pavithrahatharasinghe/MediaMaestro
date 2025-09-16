@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+python-multipart
+spotipy
+yt-dlp
+mutagen
+python-dotenv
+httpx
+Pillow

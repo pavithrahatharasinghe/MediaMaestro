@@ -1,12 +1,87 @@
-import axios from 'axios';
+import axios, { AxiosError } from 'axios';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+export interface APIError {
+  message: string;
+  status: number;
+  details?: string;
+}
 
 class APIClient {
   private baseURL: string;
 
   constructor(baseURL: string = API_BASE_URL) {
     this.baseURL = baseURL;
+    
+    // Set up axios interceptors for better error handling
+    axios.interceptors.response.use(
+      (response) => response,
+      (error: AxiosError) => {
+        console.error('API Error:', error);
+        return Promise.reject(this.handleError(error));
+      }
+    );
+  }
+
+  private handleError(error: AxiosError): APIError {
+    if (error.response) {
+      // The request was made and the server responded with a status code
+      // that falls out of the range of 2xx
+      const status = error.response.status;
+      const data = error.response.data as any;
+      
+      let message = 'An error occurred';
+      let details = '';
+      
+      if (data?.detail) {
+        if (typeof data.detail === 'string') {
+          message = data.detail;
+        } else {
+          message = JSON.stringify(data.detail);
+        }
+      } else if (data?.message) {
+        message = data.message;
+      }
+      
+      // Specific error handling for common scenarios
+      switch (status) {
+        case 401:
+          message = 'Authentication required. Please connect to Spotify first.';
+          break;
+        case 503:
+          if (message.includes('Spotify not configured')) {
+            message = 'Spotify is not configured. Please set up your Spotify API credentials.';
+            details = 'Check your .env file for SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET';
+          } else if (message.includes('Spotify manager not available')) {
+            message = 'Spotify service is temporarily unavailable.';
+          }
+          break;
+        case 500:
+          if (message.includes('Spotify search failed')) {
+            message = 'Spotify search is currently unavailable. Please try again later.';
+          }
+          break;
+      }
+      
+      return {
+        message,
+        status,
+        details
+      };
+    } else if (error.request) {
+      // The request was made but no response was received
+      return {
+        message: 'Unable to connect to server. Please check your connection.',
+        status: 0
+      };
+    } else {
+      // Something happened in setting up the request that triggered an Error
+      return {
+        message: error.message || 'An unexpected error occurred',
+        status: 0
+      };
+    }
   }
 
   // Health check
@@ -66,6 +141,14 @@ class APIClient {
   // Spotify Search
   async searchSpotify(query: string, artist?: string) {
     const response = await axios.get(`${this.baseURL}/spotify/search`, {
+      params: { q: query, artist }
+    });
+    return response.data;
+  }
+
+  // Spotify Search Demo (works without authentication)
+  async searchSpotifyDemo(query: string, artist?: string) {
+    const response = await axios.get(`${this.baseURL}/spotify/search/demo`, {
       params: { q: query, artist }
     });
     return response.data;

@@ -1,9 +1,13 @@
+from dotenv import load_dotenv
+import os
+
+load_dotenv()  # This line loads the environment variables from the .env file
+
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
-import os
 import logging
 
 # Import our modules (we'll handle imports gracefully)
